@@ -1,15 +1,13 @@
 import os
 import librosa
 import numpy as np
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-# Create the models directory if it doesn't exist
-os.makedirs("models", exist_ok=True)
-
 # Function to extract MFCC features
-def extract_features(file_path, max_pad_len=100):
+def extract_mfcc(file_path, max_pad_len=100):
     audio, sr = librosa.load(file_path, sr=None)
     mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40)
     pad_width = max_pad_len - mfccs.shape[1]
@@ -32,52 +30,53 @@ def load_dataset(dataset_path):
             if file_name.startswith('.'):  # Skip hidden files/folders
                 continue
             try:
-                mfccs = extract_features(file_path)
+                mfccs = extract_mfcc(file_path)
                 features.append(mfccs)
                 labels.append(word)
             except Exception as e:
                 print(f"Skipping file {file_path} due to error: {e}")
     return np.array(features), np.array(labels)
 
+# Function to create a 1D CNN model
+def create_kws_model(input_shape, num_classes):
+    model = models.Sequential([
+        layers.Conv1D(8, 3, activation='relu', input_shape=input_shape),
+        layers.MaxPooling1D(2),
+        layers.Conv1D(16, 3, activation='relu'),
+        layers.MaxPooling1D(2),
+        layers.Flatten(),
+        layers.Dense(32, activation='relu'),
+        layers.Dropout(0.5),
+        layers.Dense(num_classes, activation='softmax')
+    ])
+    return model
+
 # Main script
 if __name__ == "__main__":
-    # Load training dataset
-    train_dataset_path = "data/train_dataset"  # Path to training dataset
-    X_train, y_train = load_dataset(train_dataset_path)
-    
-    # Load testing dataset
-    test_dataset_path = "data/test_dataset"  # Path to testing dataset
-    X_test, y_test = load_dataset(test_dataset_path)
+    # Load dataset
+    dataset_path = "data/train_dataset"  # Path to training dataset
+    features, labels = load_dataset(dataset_path)
     
     # Normalize features
-    X_train = (X_train - np.mean(X_train, axis=0)) / np.std(X_train, axis=0)
-    X_test = (X_test - np.mean(X_test, axis=0)) / np.std(X_test, axis=0)
+    features = (features - np.mean(features, axis=0)) / np.std(features, axis=0)
     
     # Encode labels
     label_encoder = LabelEncoder()
-    y_train = label_encoder.fit_transform(y_train)
-    y_test = label_encoder.transform(y_test)  # Use the same encoder for testing data
+    labels_encoded = label_encoder.fit_transform(labels)
     
     # Save the label encoder classes
     np.save("models/label_encoder_classes.npy", label_encoder.classes_)
     
     # Reshape features for CNN input
-    X_train = np.expand_dims(X_train, axis=-1)
-    X_test = np.expand_dims(X_test, axis=-1)
+    features = np.expand_dims(features, axis=-1)
+    
+    # Split dataset into train and test
+    X_train, X_test, y_train, y_test = train_test_split(features, labels_encoded, test_size=0.2, random_state=42)
     
     # Build the model
     input_shape = X_train.shape[1:]
     num_classes = len(label_encoder.classes_)
-    model = models.Sequential([
-        layers.Conv2D(32, (3, 3), activation='relu', input_shape=input_shape),
-        layers.MaxPooling2D((2, 2)),
-        layers.Conv2D(64, (3, 3), activation='relu'),
-        layers.MaxPooling2D((2, 2)),
-        layers.Flatten(),
-        layers.Dense(128, activation='relu'),
-        layers.Dropout(0.5),
-        layers.Dense(num_classes, activation='softmax')
-    ])
+    model = create_kws_model(input_shape, num_classes)
     
     # Compile the model
     model.compile(optimizer='adam',
@@ -85,10 +84,19 @@ if __name__ == "__main__":
                   metrics=['accuracy'])
     
     # Train the model
-    model.fit(X_train, y_train, epochs=20, batch_size=32, validation_data=(X_test, y_test))
+    model.fit(X_train, y_train, epochs=10, batch_size=32, validation_data=(X_test, y_test))
     
     # Save the model
-    model.save("models/voice_recognition_model.h5")
+    model.save("models/kws_model.h5")
+    
+    # Convert to TensorFlow Lite
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    tflite_model = converter.convert()
+    
+    # Save the quantized model
+    with open("models/kws_model.tflite", "wb") as f:
+        f.write(tflite_model)
     
     # Evaluate the model
     test_loss, test_acc = model.evaluate(X_test, y_test)
