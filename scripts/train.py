@@ -4,7 +4,8 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import tensorflow as tf
-from tensorflow.keras import layers, models
+layers = tf.keras.layers
+models = tf.keras.models
 
 # Function to extract MFCC features
 def extract_mfcc(file_path, max_pad_len=100):
