@@ -3,9 +3,12 @@ import librosa
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import classification_report  # Add this import
+from collections import Counter
 import tensorflow as tf
 layers = tf.keras.layers
 models = tf.keras.models
+EarlyStopping = tf.keras.callbacks.EarlyStopping
 
 # Function to extract MFCC features
 def extract_mfcc(file_path, max_pad_len=100):
@@ -41,12 +44,12 @@ def load_dataset(dataset_path):
 # Function to create a 1D CNN model
 def create_kws_model(input_shape, num_classes):
     model = models.Sequential([
-        layers.Conv1D(8, 3, activation='relu', input_shape=input_shape),
+        layers.Conv1D(32, 3, activation='relu', input_shape=input_shape),
         layers.MaxPooling1D(2),
-        layers.Conv1D(16, 3, activation='relu'),
+        layers.Conv1D(64, 3, activation='relu'),
         layers.MaxPooling1D(2),
         layers.Flatten(),
-        layers.Dense(32, activation='relu'),
+        layers.Dense(128, activation='relu'),
         layers.Dropout(0.5),
         layers.Dense(num_classes, activation='softmax')
     ])
@@ -54,12 +57,28 @@ def create_kws_model(input_shape, num_classes):
 
 # Main script
 if __name__ == "__main__":
+    # Ensure the models folder exists
+    os.makedirs("models", exist_ok=True)
+    
     # Load dataset
     dataset_path = "data/train_dataset"  # Path to training dataset
     features, labels = load_dataset(dataset_path)
     
+    # Print dataset statistics
+    print(f"Number of samples: {len(features)}")
+    print(f"Feature shape: {features[0].shape}")
+    print(f"Classes: {np.unique(labels)}")
+    print(f"Samples per class: {Counter(labels)}")
+    
     # Normalize features
-    features = (features - np.mean(features, axis=0)) / np.std(features, axis=0)
+    std_dev = np.std(features, axis=0)
+    std_dev[std_dev == 0] = 1.0  # Avoid division by zero
+    features = (features - np.mean(features, axis=0)) / std_dev
+    
+    # Check for NaN or Inf values
+    if np.isnan(features).any() or np.isinf(features).any():
+        print("Warning: Dataset contains NaN or Inf values. Replacing with zeros.")
+        features = np.nan_to_num(features)
     
     # Encode labels
     label_encoder = LabelEncoder()
@@ -68,14 +87,12 @@ if __name__ == "__main__":
     # Save the label encoder classes
     np.save("models/label_encoder_classes.npy", label_encoder.classes_)
     
-    # Reshape features for CNN input (no need to add extra dimension)
-    # features shape: (num_samples, num_frames, num_mfcc_coefficients)
-    
     # Split dataset into train and test
     X_train, X_test, y_train, y_test = train_test_split(features, labels_encoded, test_size=0.2, random_state=42)
     
     # Build the model
     input_shape = X_train.shape[1:]  # Shape: (num_frames, num_mfcc_coefficients)
+    print(f"Model input shape: {input_shape}")
     num_classes = len(label_encoder.classes_)
     model = create_kws_model(input_shape, num_classes)
     
@@ -84,21 +101,18 @@ if __name__ == "__main__":
                   loss='sparse_categorical_crossentropy',
                   metrics=['accuracy'])
     
-    # Train the model
-    model.fit(X_train, y_train, epochs=10, batch_size=32, validation_data=(X_test, y_test))
+    # Train the model with early stopping
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    history = model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test), callbacks=[early_stopping])
     
     # Save the model
-    model.save("models/kws_model.h5")
-    
-    # Convert to TensorFlow Lite
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    tflite_model = converter.convert()
-    
-    # Save the quantized model
-    with open("models/kws_model.tflite", "wb") as f:
-        f.write(tflite_model)
+    model.save("models/kws_model.keras")
     
     # Evaluate the model
     test_loss, test_acc = model.evaluate(X_test, y_test)
     print(f"Test Accuracy: {test_acc}")
+    
+    # Print classification report
+    y_pred = model.predict(X_test)
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    print(classification_report(y_test, y_pred_classes, target_names=label_encoder.classes_))

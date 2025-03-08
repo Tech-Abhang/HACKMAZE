@@ -1,11 +1,8 @@
 import os
 import librosa
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 import tensorflow as tf
-layers = tf.keras.layers
-models = tf.keras.models
+from sklearn.preprocessing import LabelEncoder
 
 # Function to extract MFCC features
 def extract_mfcc(file_path, max_pad_len=100):
@@ -18,104 +15,92 @@ def extract_mfcc(file_path, max_pad_len=100):
         mfccs = mfccs[:, :max_pad_len]
     return mfccs
 
-# Function to load the dataset
-def load_dataset(dataset_path):
-    features = []
-    labels = []
-    for word in os.listdir(dataset_path):
-        word_path = os.path.join(dataset_path, word)
-        if not os.path.isdir(word_path):  # Skip if it's not a directory
-            continue
-        for file_name in os.listdir(word_path):
-            file_path = os.path.join(word_path, file_name)
-            if file_name.startswith('.'):  # Skip hidden files/folders
-                continue
-            try:
-                mfccs = extract_mfcc(file_path)
-                features.append(mfccs)
-                labels.append(word)
-            except Exception as e:
-                print(f"Skipping file {file_path} due to error: {e}")
-    return np.array(features), np.array(labels)
+# Function to load the trained model and label encoder
+def load_model_and_encoder(model_path, label_encoder_path):
+    # Load the trained Keras model
+    model = tf.keras.models.load_model(model_path)
+    
+    # Load the label encoder classes
+    label_encoder_classes = np.load(label_encoder_path, allow_pickle=True)
+    label_encoder = LabelEncoder()
+    label_encoder.classes_ = label_encoder_classes
+    
+    return model, label_encoder
 
-# Function to create a 1D CNN model
-def create_kws_model(input_shape, num_classes):
-    model = models.Sequential([
-        layers.Conv1D(8, 3, activation='relu', input_shape=input_shape),
-        layers.MaxPooling1D(2),
-        layers.Conv1D(16, 3, activation='relu'),
-        layers.MaxPooling1D(2),
-        layers.Flatten(),
-        layers.Dense(32, activation='relu'),
-        layers.Dropout(0.5),
-        layers.Dense(num_classes, activation='softmax')
-    ])
-    return model
+# Function to detect keywords in a given audio file
+def detect_keywords_in_sentence(model, label_encoder, file_path, keywords, window_size=100, stride=50):
+    # Check if the file exists
+    if not os.path.exists(file_path):
+        print(f"Error: File not found at {file_path}")
+        return {}
+    
+    try:
+        # Load the audio file
+        audio, sr = librosa.load(file_path, sr=None)
+        
+        # Extract MFCC features for the entire audio
+        mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=40)
+        
+        # Normalize features (use the same normalization as during training)
+        mfccs = (mfccs - np.mean(mfccs, axis=0)) / np.std(mfccs, axis=0)
+        
+        # Dictionary to store detection results
+        detection_results = {keyword: "no" for keyword in keywords}
+        
+        # Use a sliding window to analyze segments of the audio
+        for i in range(0, mfccs.shape[1] - window_size, stride):
+            segment = mfccs[:, i:i + window_size]
+            
+            # Reshape for model input (add batch dimension)
+            segment = np.expand_dims(segment, axis=0)  # Shape: (1, num_frames, num_mfcc_coefficients)
+            
+            # Predict
+            predictions = model.predict(segment)
+            predicted_class_index = np.argmax(predictions, axis=1)[0]
+            predicted_class = label_encoder.inverse_transform([predicted_class_index])[0]
+            
+            # Check if the predicted class matches any of the keywords
+            if predicted_class in detection_results:
+                detection_results[predicted_class] = "yes"
+        
+        return detection_results
+    except Exception as e:
+        print(f"Error processing audio file {file_path}: {e}")
+        return {}
 
 # Main script
 if __name__ == "__main__":
-    # Ensure the models folder exists
-    os.makedirs("models", exist_ok=True)
+    # Paths to the trained model and label encoder
+    model_path = "models/kws_model.keras"  # Path to the trained Keras model
+    label_encoder_path = "models/label_encoder_classes.npy"  # Path to the label encoder classes
     
-    # Load dataset
-    dataset_path = "data/train_dataset"  # Path to training dataset
-    features, labels = load_dataset(dataset_path)
+    # Load the model and label encoder
+    model, label_encoder = load_model_and_encoder(model_path, label_encoder_path)
     
-    # Normalize features
-    features = (features - np.mean(features, axis=0)) / np.std(features, axis=0)
+    # Path to the folder containing test audio files
+    test_audio_folder = "data/test_audio"  # Replace with your test audio folder path
     
-    # Check for NaN or Inf values
-    if np.isnan(features).any() or np.isinf(features).any():
-        print("Warning: Dataset contains NaN or Inf values. Replacing with zeros.")
-        features = np.nan_to_num(features)
+    # Check if the test audio folder exists
+    if not os.path.exists(test_audio_folder):
+        print(f"Error: Test audio folder not found at {test_audio_folder}")
+        exit(1)
     
-    # Encode labels
-    label_encoder = LabelEncoder()
-    labels_encoded = label_encoder.fit_transform(labels)
+    # List of keywords to detect (from the training dataset)
+    keywords = ["dharwad", "down", "go", "hackmaze", "hubli", "left", "right", "stop", "triple IT", "up"]
     
-    # Save the label encoder classes
-    np.save("models/label_encoder_classes.npy", label_encoder.classes_)
-    
-    # Reshape features for CNN input (no need to add extra dimension)
-    # features shape: (num_samples, num_frames, num_mfcc_coefficients)
-    
-    # Split dataset into train and test
-    X_train, X_test, y_train, y_test = train_test_split(features, labels_encoded, test_size=0.2, random_state=42)
-    
-    # Build the model
-    input_shape = X_train.shape[1:]  # Shape: (num_frames, num_mfcc_coefficients)
-    print(f"Model input shape: {input_shape}")
-    num_classes = len(label_encoder.classes_)
-    model = create_kws_model(input_shape, num_classes)
-    
-    # Compile the model
-    model.compile(optimizer='adam',
-                  loss='sparse_categorical_crossentropy',
-                  metrics=['accuracy'])
-    
-    # Train the model
-    model.fit(X_train, y_train, epochs=10, batch_size=32, validation_data=(X_test, y_test))
-    
-    # Save the model
-    model.save("models/kws_model.h5")
-    
-    # Convert to TensorFlow Lite
-    try:
-        print("Starting TensorFlow Lite conversion...")
-        converter = tf.lite.TFLiteConverter.from_keras_model(model)
-        print("Converter created successfully.")
-        converter.optimizations = [tf.lite.Optimize.DEFAULT]
-        print("Optimizations set successfully.")
-        tflite_model = converter.convert()
-        print("Model converted successfully.")
+    # Iterate through all files in the test audio folder
+    for file_name in os.listdir(test_audio_folder):
+        # Skip hidden files/folders
+        if file_name.startswith('.'):
+            continue
         
-        # Save the quantized model
-        with open("models/kws_model.tflite", "wb") as f:
-            f.write(tflite_model)
-        print("TensorFlow Lite model saved successfully.")
-    except Exception as e:
-        print(f"Error converting model to TensorFlow Lite: {e}")
-    
-    # Evaluate the model
-    test_loss, test_acc = model.evaluate(X_test, y_test)
-    print(f"Test Accuracy: {test_acc}")
+        # Construct the full file path
+        file_path = os.path.join(test_audio_folder, file_name)
+        
+        # Detect keywords in the current audio file
+        detection_results = detect_keywords_in_sentence(model, label_encoder, file_path, keywords)
+        
+        # Print detection results for the current file
+        print(f"\nResults for file: {file_name}")
+        for keyword, result in detection_results.items():
+            print(f"{keyword}: {result}")
