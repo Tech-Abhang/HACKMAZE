@@ -1,7 +1,6 @@
 import os
 import librosa
 import numpy as np
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -42,25 +41,29 @@ def load_dataset(dataset_path):
 
 # Main script
 if __name__ == "__main__":
-    # Load dataset
-    dataset_path = "data/voice_dataset"  # Path to dataset
-    features, labels = load_dataset(dataset_path)
+    # Load training dataset
+    train_dataset_path = "data/train_dataset"  # Path to training dataset
+    X_train, y_train = load_dataset(train_dataset_path)
+    
+    # Load testing dataset
+    test_dataset_path = "data/test_dataset"  # Path to testing dataset
+    X_test, y_test = load_dataset(test_dataset_path)
     
     # Normalize features
-    features = (features - np.mean(features, axis=0)) / np.std(features, axis=0)
+    X_train = (X_train - np.mean(X_train, axis=0)) / np.std(X_train, axis=0)
+    X_test = (X_test - np.mean(X_test, axis=0)) / np.std(X_test, axis=0)
     
     # Encode labels
     label_encoder = LabelEncoder()
-    labels_encoded = label_encoder.fit_transform(labels)
+    y_train = label_encoder.fit_transform(y_train)
+    y_test = label_encoder.transform(y_test)  # Use the same encoder for testing data
     
     # Save the label encoder classes
     np.save("models/label_encoder_classes.npy", label_encoder.classes_)
     
     # Reshape features for CNN input
-    features = np.expand_dims(features, axis=-1)
-    
-    # Split dataset into train and test
-    X_train, X_test, y_train, y_test = train_test_split(features, labels_encoded, test_size=0.2, random_state=42)
+    X_train = np.expand_dims(X_train, axis=-1)
+    X_test = np.expand_dims(X_test, axis=-1)
     
     # Build the model
     input_shape = X_train.shape[1:]
