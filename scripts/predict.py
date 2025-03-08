@@ -1,8 +1,11 @@
 import os
-import numpy as np
 import librosa
-import tensorflow as tf
+import numpy as np
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
+import tensorflow as tf
+layers = tf.keras.layers
+models = tf.keras.models
 
 # Function to extract MFCC features
 def extract_mfcc(file_path, max_pad_len=100):
@@ -15,34 +18,104 @@ def extract_mfcc(file_path, max_pad_len=100):
         mfccs = mfccs[:, :max_pad_len]
     return mfccs
 
-# Function to predict keywords
-def predict_keyword(model, label_encoder, file_path):
-    mfccs = extract_mfcc(file_path)
-    mfccs = (mfccs - np.mean(mfccs, axis=0)) / np.std(mfccs, axis=0)  # Normalize
-    mfccs = np.expand_dims(mfccs, axis=0)  # Add batch dimension
-    mfccs = np.expand_dims(mfccs, axis=-1)  # Add channel dimension
-    predictions = model.predict(mfccs)
-    predicted_label = np.argmax(predictions, axis=1)
-    predicted_word = label_encoder.inverse_transform(predicted_label)
-    return predicted_word[0]
+# Function to load the dataset
+def load_dataset(dataset_path):
+    features = []
+    labels = []
+    for word in os.listdir(dataset_path):
+        word_path = os.path.join(dataset_path, word)
+        if not os.path.isdir(word_path):  # Skip if it's not a directory
+            continue
+        for file_name in os.listdir(word_path):
+            file_path = os.path.join(word_path, file_name)
+            if file_name.startswith('.'):  # Skip hidden files/folders
+                continue
+            try:
+                mfccs = extract_mfcc(file_path)
+                features.append(mfccs)
+                labels.append(word)
+            except Exception as e:
+                print(f"Skipping file {file_path} due to error: {e}")
+    return np.array(features), np.array(labels)
+
+# Function to create a 1D CNN model
+def create_kws_model(input_shape, num_classes):
+    model = models.Sequential([
+        layers.Conv1D(8, 3, activation='relu', input_shape=input_shape),
+        layers.MaxPooling1D(2),
+        layers.Conv1D(16, 3, activation='relu'),
+        layers.MaxPooling1D(2),
+        layers.Flatten(),
+        layers.Dense(32, activation='relu'),
+        layers.Dropout(0.5),
+        layers.Dense(num_classes, activation='softmax')
+    ])
+    return model
 
 # Main script
 if __name__ == "__main__":
-    # Load the model
-    model = tf.keras.models.load_model("models/kws_model.h5")
+    # Ensure the models folder exists
+    os.makedirs("models", exist_ok=True)
     
-    # Load the label encoder
+    # Load dataset
+    dataset_path = "data/train_dataset"  # Path to training dataset
+    features, labels = load_dataset(dataset_path)
+    
+    # Normalize features
+    features = (features - np.mean(features, axis=0)) / np.std(features, axis=0)
+    
+    # Check for NaN or Inf values
+    if np.isnan(features).any() or np.isinf(features).any():
+        print("Warning: Dataset contains NaN or Inf values. Replacing with zeros.")
+        features = np.nan_to_num(features)
+    
+    # Encode labels
     label_encoder = LabelEncoder()
-    label_encoder.classes_ = np.load("models/label_encoder_classes.npy", allow_pickle=True)
+    labels_encoded = label_encoder.fit_transform(labels)
     
-    # Path to the test audio files
-    test_audio_folder = "data/test_audio"
+    # Save the label encoder classes
+    np.save("models/label_encoder_classes.npy", label_encoder.classes_)
     
-    # Get list of audio files in the test folder
-    test_files = [os.path.join(test_audio_folder, f) for f in os.listdir(test_audio_folder) if f.endswith('.wav')]
+    # Reshape features for CNN input (no need to add extra dimension)
+    # features shape: (num_samples, num_frames, num_mfcc_coefficients)
     
-    # Predict for each audio file
-    print("Testing new audio files:")
-    for file_path in test_files:
-        predicted_word = predict_keyword(model, label_encoder, file_path)
-        print(f"File: {file_path}, Predicted Word: {predicted_word}")
+    # Split dataset into train and test
+    X_train, X_test, y_train, y_test = train_test_split(features, labels_encoded, test_size=0.2, random_state=42)
+    
+    # Build the model
+    input_shape = X_train.shape[1:]  # Shape: (num_frames, num_mfcc_coefficients)
+    print(f"Model input shape: {input_shape}")
+    num_classes = len(label_encoder.classes_)
+    model = create_kws_model(input_shape, num_classes)
+    
+    # Compile the model
+    model.compile(optimizer='adam',
+                  loss='sparse_categorical_crossentropy',
+                  metrics=['accuracy'])
+    
+    # Train the model
+    model.fit(X_train, y_train, epochs=10, batch_size=32, validation_data=(X_test, y_test))
+    
+    # Save the model
+    model.save("models/kws_model.h5")
+    
+    # Convert to TensorFlow Lite
+    try:
+        print("Starting TensorFlow Lite conversion...")
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+        print("Converter created successfully.")
+        converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        print("Optimizations set successfully.")
+        tflite_model = converter.convert()
+        print("Model converted successfully.")
+        
+        # Save the quantized model
+        with open("models/kws_model.tflite", "wb") as f:
+            f.write(tflite_model)
+        print("TensorFlow Lite model saved successfully.")
+    except Exception as e:
+        print(f"Error converting model to TensorFlow Lite: {e}")
+    
+    # Evaluate the model
+    test_loss, test_acc = model.evaluate(X_test, y_test)
+    print(f"Test Accuracy: {test_acc}")

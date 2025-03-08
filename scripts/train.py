@@ -68,14 +68,14 @@ if __name__ == "__main__":
     # Save the label encoder classes
     np.save("models/label_encoder_classes.npy", label_encoder.classes_)
     
-    # Reshape features for CNN input
-    features = np.expand_dims(features, axis=-1)
+    # Reshape features for CNN input (no need to add extra dimension)
+    # features shape: (num_samples, num_frames, num_mfcc_coefficients)
     
     # Split dataset into train and test
     X_train, X_test, y_train, y_test = train_test_split(features, labels_encoded, test_size=0.2, random_state=42)
     
     # Build the model
-    input_shape = X_train.shape[1:]
+    input_shape = X_train.shape[1:]  # Shape: (num_frames, num_mfcc_coefficients)
     num_classes = len(label_encoder.classes_)
     model = create_kws_model(input_shape, num_classes)
     
