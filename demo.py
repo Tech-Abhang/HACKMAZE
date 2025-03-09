@@ -580,7 +580,7 @@ def recognize_word(audio_file, hmm_models):
 if __name__ == "__main__":
     try:
         # Define the 7 words to recognize
-        words = ["up", "down", "left", "right", "yes", "no", "stop"]
+        words = ["up", "down", "left", "right", "yes", "no", "stop" , "Hubli" , "dharwad" , "Hackmaze"]
         
         # Base directory for training data
         base_dir = "data/train_dataset"
@@ -626,7 +626,7 @@ if __name__ == "__main__":
         if hmm_models:
             print("\nTesting recognition...")
             # You can modify this to test with different words
-            test_word = ""  # Change this to test different words
+            test_word = "Hackmaze"  # Change this to test different words
             test_file = os.path.join(base_dir, test_word, f"{test_word.capitalize()}-2.wav")
             
             if os.path.exists(test_file):
